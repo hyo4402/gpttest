@@ -45,31 +45,19 @@ jobs:
           echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
           "$GCC_PATH" --version | tee TOOLCHAIN.txt
 
-      - name: Restore exact V55 config
-        run: |
-          cat configs/v55_4.4.302.config.gz.b64.part* > V55_CONFIG.b64
-          echo "d7c77a7f9643206fe25c5bcfab13dc1369d6f624ed0059da41f678c9327661fc  V55_CONFIG.b64" | sha256sum -c -
-          base64 -d V55_CONFIG.b64 > V55_CONFIG.gz
-          echo "139700a74188a2f03d44e04be2f0f49d77c046d5d093b90e99aeff6ed0ee8bf5  V55_CONFIG.gz" | sha256sum -c -
-          gzip -dc V55_CONFIG.gz > V55_BASELINE.config
-          echo "25534172654cc2ef053bc2b2580dc8e0d647a921624ad7bdea54024f07672c07  V55_BASELINE.config" | sha256sum -c -
-          mkdir -p kernel/out
-          cp V55_BASELINE.config kernel/out/.config
-
-      - name: Enable safe SUSFS profile
+      - name: Configure dream2lte with safe SUSFS
         working-directory: kernel
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-none-linux-gnu-
+          make O=out exynos8895-dream2lte_defconfig
+          cp out/.config ../SOURCE_BASELINE.config
           scripts/config --file out/.config -e KSU -e KSU_MANUAL_HOOK -e KSU_SUSFS
           scripts/config --file out/.config -d KSU_SUSFS_SUS_PATH -d KSU_SUSFS_SUS_SU -d KSU_SUSFS_ENABLE_LOG
           scripts/config --file out/.config -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT -e KSU_SUSFS_SUS_OVERLAYFS
           scripts/config --file out/.config -e KSU_SUSFS_TRY_UMOUNT -e KSU_SUSFS_SPOOF_UNAME
           make O=out olddefconfig
           grep -E '^(CONFIG_KSU|CONFIG_KSU_SUSFS)|^# CONFIG_KSU_SUSFS' out/.config | tee ../SUSFS_CONFIG.txt
-
-      - name: Enforce V55 config drift gate
-        run: python3 tools/config_gate.py V55_BASELINE.config kernel/out/.config CONFIG_GATE.json
 
       - name: Build kernel Image
         working-directory: kernel
@@ -78,28 +66,29 @@ jobs:
           export CROSS_COMPILE=aarch64-none-linux-gnu-
           make O=out -j2 Image 2>&1 | tee ../BUILD_LOG.txt
 
-      - name: Verify artifact
+      - name: Verify SUSFS artifact
         run: |
           test -s kernel/out/arch/arm64/boot/Image
+          grep -q '^CONFIG_KSU=y' kernel/out/.config
+          grep -q '^CONFIG_KSU_MANUAL_HOOK=y' kernel/out/.config
           grep -q '^CONFIG_KSU_SUSFS=y' kernel/out/.config
           grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set' kernel/out/.config
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set' kernel/out/.config
           strings kernel/out/arch/arm64/boot/Image | grep -i -m1 susfs
           cp kernel/out/arch/arm64/boot/Image Image-dream2lte-susfs
           cp kernel/out/.config dream2lte_susfs.config
-          sha256sum Image-dream2lte-susfs dream2lte_susfs.config V55_BASELINE.config > SHA256SUMS.txt
+          sha256sum Image-dream2lte-susfs dream2lte_susfs.config SOURCE_BASELINE.config > SHA256SUMS.txt
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S8Plus-dream2lte-SUSFS-V55-config
+          name: S8Plus-dream2lte-SUSFS-source-config
           if-no-files-found: error
           retention-days: 7
           path: |
             Image-dream2lte-susfs
             dream2lte_susfs.config
-            V55_BASELINE.config
-            CONFIG_GATE.json
+            SOURCE_BASELINE.config
             SHA256SUMS.txt
             KERNEL_COMMIT.txt
             SUBMODULES.txt
