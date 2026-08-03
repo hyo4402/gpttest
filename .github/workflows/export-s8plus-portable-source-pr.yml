@@ -1,0 +1,36 @@
+name: Export portable S8 Plus source on PR
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/export-s8plus-portable-source-pr.yml'
+      - 'tools/export_portable_source.sh'
+      - 'tools/backport_trace_hex_str.py'
+      - 'configs/v55_chunks/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential cpio flex git libelf-dev libssl-dev lz4 python3 rsync xz-utils zip
+      - name: Export complete repository-ready source snapshot
+        run: bash tools/export_portable_source.sh
+      - name: Upload portable full source
+        uses: actions/upload-artifact@v4
+        with:
+          name: S8Plus-ALice-FULL-SOURCE-PORTABLE
+          path: |
+            export-output/S8Plus_ALice_FULL_SOURCE_PORTABLE_20260803.zip
+            export-output/SOURCE_ZIP_SHA256.txt
+          compression-level: 0
+          retention-days: 7
