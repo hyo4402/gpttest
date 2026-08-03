@@ -64,14 +64,21 @@ jobs:
           echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
           "$GCC_PATH" --version | tee TOOLCHAIN.txt
 
-      - name: Configure dream2lte with safe SUSFS
+      - name: Restore exact V55 embedded config
+        run: |
+          set -euxo pipefail
+          echo "7ca6bc454a72d88477ac94b6baa1185c193339c72d64e3c401a0c94a958b45cf  configs/v55_exact.config.gz" | sha256sum -c -
+          gzip -dc configs/v55_exact.config.gz > V55_BASELINE.config
+          echo "25534172654cc2ef053bc2b2580dc8e0d647a921624ad7bdea54024f07672c07  V55_BASELINE.config" | sha256sum -c -
+          mkdir -p kernel/out
+          cp V55_BASELINE.config kernel/out/.config
+
+      - name: Enable safe SUSFS profile
         working-directory: kernel
         run: |
           set -euxo pipefail
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-none-linux-gnu-
-          make O=out exynos8895-dream2lte_defconfig
-          cp out/.config ../SOURCE_BASELINE.config
           scripts/config --file out/.config -e OVERLAY_FS
           scripts/config --file out/.config -e KSU -e KSU_SUSFS
           scripts/config --file out/.config -d KSU_SUSFS_SUS_PATH -d KSU_SUSFS_SUS_SU -d KSU_SUSFS_ENABLE_LOG
@@ -82,6 +89,9 @@ jobs:
           grep -q '^CONFIG_OVERLAY_FS=y' out/.config
           grep -q '^CONFIG_KSU=y' out/.config
           grep -q '^CONFIG_KSU_SUSFS=y' out/.config
+
+      - name: Enforce exact V55 config drift gate
+        run: python3 tools/config_gate.py V55_BASELINE.config kernel/out/.config CONFIG_GATE.json
 
       - name: Build kernel Image
         working-directory: kernel
@@ -117,19 +127,20 @@ jobs:
           test -f kernel/out/arch/arm64/boot/Image && cp kernel/out/arch/arm64/boot/Image Image-dream2lte-susfs || true
           test -f kernel/out/.config && cp kernel/out/.config dream2lte_susfs.config || true
           test -f kernel/out/System.map && cp kernel/out/System.map System.map-dream2lte-susfs || true
-          sha256sum Image-dream2lte-susfs dream2lte_susfs.config SOURCE_BASELINE.config System.map-dream2lte-susfs > SHA256SUMS.txt 2>/dev/null || true
+          sha256sum Image-dream2lte-susfs dream2lte_susfs.config V55_BASELINE.config System.map-dream2lte-susfs > SHA256SUMS.txt 2>/dev/null || true
 
       - name: Upload build artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: S8Plus-dream2lte-SUSFS-source-config
+          name: S8Plus-dream2lte-SUSFS-V55-exact-config
           if-no-files-found: warn
           retention-days: 7
           path: |
             Image-dream2lte-susfs
             dream2lte_susfs.config
-            SOURCE_BASELINE.config
+            V55_BASELINE.config
+            CONFIG_GATE.json
             System.map-dream2lte-susfs
             VERIFY_SUSFS.txt
             MANUAL_HOOK_EVIDENCE.txt
