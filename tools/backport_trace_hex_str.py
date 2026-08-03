@@ -64,7 +64,7 @@ for label, block in (("do_last post-check", bad_do_last), ("vfs_unlink2 post-che
 p.write_text(s)
 
 # Repair a literal stray 'v' in the pinned V55 cfg80211 scan-done trace event.
-# This affects trace formatting only; no Wi-Fi runtime logic or driver state.
+# Use the format from the stable sibling branch; this is trace formatting only.
 p = root / "net/wireless/trace.h"
 s = p.read_text()
 old = '''\t),
@@ -73,7 +73,7 @@ v
 
 DEFINE_EVENT(wiphy_only_evt, cfg80211_sched_scan_results,'''
 new = '''\t),
-\tTP_printk("cfg80211 scan done")
+\tTP_printk("aborted: %s", BOOL_TO_STR(__entry->aborted))
 );
 
 DEFINE_EVENT(wiphy_only_evt, cfg80211_sched_scan_results,'''
