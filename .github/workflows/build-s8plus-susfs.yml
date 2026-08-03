@@ -3,7 +3,7 @@ name: Build S8 Plus SUSFS kernel
 on:
   push:
     branches:
-      - agent/alice-s8plus-susfs-build
+      - 'agent/alice-s8plus-susfs-*'
   pull_request:
     branches:
       - main
@@ -20,15 +20,14 @@ jobs:
       - name: Checkout workspace
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential cpio flex git libelf-dev libssl-dev lz4 python3 rsync xz-utils zip
 
-      - name: Fetch pinned SUSFS kernel source
+      - name: Fetch pinned SUSFS source
         run: |
-          git clone --recursive --branch lineage-20.0-kernelsu-susfs \
-            https://github.com/fnr1r/android_kernel_samsung_universal8895.git kernel
+          git clone --recursive --branch lineage-20.0-kernelsu-susfs https://github.com/fnr1r/android_kernel_samsung_universal8895.git kernel
           cd kernel
           git checkout 7bc44731088e0e004345fcd71eac0fbf877849c1
           git submodule sync --recursive
@@ -38,63 +37,63 @@ jobs:
 
       - name: Install Arm GNU Toolchain 13.3.Rel1
         run: |
-          curl -L --retry 5 --retry-delay 3 \
-            -o arm-gnu.tar.xz \
-            https://developer.arm.com/-/media/Files/downloads/gnu/13.3.rel1/binrel/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+          curl -L --retry 5 --retry-delay 3 -o arm-gnu.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/13.3.rel1/binrel/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
           tar -xf arm-gnu.tar.xz
-          TOOLCHAIN="$PWD/arm-gnu-toolchain-13.3.Rel1-x86_64-aarch64-none-linux-gnu/bin"
-          echo "$TOOLCHAIN" >> "$GITHUB_PATH"
-          "$TOOLCHAIN/aarch64-none-linux-gnu-gcc" --version | tee TOOLCHAIN.txt
+          echo "$PWD/arm-gnu-toolchain-13.3.Rel1-x86_64-aarch64-none-linux-gnu/bin" >> "$GITHUB_PATH"
+          arm-gnu-toolchain-13.3.Rel1-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-gcc --version | tee TOOLCHAIN.txt
 
-      - name: Configure dream2lte and enable safe SUSFS
+      - name: Restore exact V55 config
+        run: |
+          echo "139700a74188a2f03d44e04be2f0f49d77c046d5d093b90e99aeff6ed0ee8bf5  configs/v55_4.4.302.config.gz" | sha256sum -c -
+          gzip -dc configs/v55_4.4.302.config.gz > V55_BASELINE.config
+          echo "25534172654cc2ef053bc2b2580dc8e0d647a921624ad7bdea54024f07672c07  V55_BASELINE.config" | sha256sum -c -
+          mkdir -p kernel/out
+          cp V55_BASELINE.config kernel/out/.config
+
+      - name: Enable safe SUSFS profile
         working-directory: kernel
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-none-linux-gnu-
-          make O=out exynos8895-dream2lte_defconfig
-          scripts/config --file out/.config \
-            -e KSU \
-            -e KSU_MANUAL_HOOK \
-            -e KSU_SUSFS \
-            -d KSU_SUSFS_SUS_PATH \
-            -e KSU_SUSFS_SUS_MOUNT \
-            -e KSU_SUSFS_SUS_KSTAT \
-            -e KSU_SUSFS_SUS_OVERLAYFS \
-            -e KSU_SUSFS_TRY_UMOUNT \
-            -e KSU_SUSFS_SPOOF_UNAME \
-            -d KSU_SUSFS_ENABLE_LOG \
-            -d KSU_SUSFS_SUS_SU
+          scripts/config --file out/.config -e KSU -e KSU_MANUAL_HOOK -e KSU_SUSFS
+          scripts/config --file out/.config -d KSU_SUSFS_SUS_PATH -d KSU_SUSFS_SUS_SU -d KSU_SUSFS_ENABLE_LOG
+          scripts/config --file out/.config -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT -e KSU_SUSFS_SUS_OVERLAYFS
+          scripts/config --file out/.config -e KSU_SUSFS_TRY_UMOUNT -e KSU_SUSFS_SPOOF_UNAME
           make O=out olddefconfig
           grep -E '^(CONFIG_KSU|CONFIG_KSU_SUSFS)|^# CONFIG_KSU_SUSFS' out/.config | tee ../SUSFS_CONFIG.txt
 
-      - name: Build SUSFS kernel Image only
+      - name: Enforce V55 config drift gate
+        run: python3 tools/config_gate.py V55_BASELINE.config kernel/out/.config CONFIG_GATE.json
+
+      - name: Build kernel Image
         working-directory: kernel
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-none-linux-gnu-
           make O=out -j2 Image 2>&1 | tee ../BUILD_LOG.txt
 
-      - name: Verify build and SUSFS symbols
+      - name: Verify artifact
         run: |
           test -s kernel/out/arch/arm64/boot/Image
-          grep -q '^CONFIG_KSU=y' kernel/out/.config
           grep -q '^CONFIG_KSU_SUSFS=y' kernel/out/.config
           grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set' kernel/out/.config
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set' kernel/out/.config
           strings kernel/out/arch/arm64/boot/Image | grep -i -m1 susfs
-          cp kernel/out/.config dream2lte_susfs.config
           cp kernel/out/arch/arm64/boot/Image Image-dream2lte-susfs
-          sha256sum Image-dream2lte-susfs dream2lte_susfs.config > SHA256SUMS.txt
+          cp kernel/out/.config dream2lte_susfs.config
+          sha256sum Image-dream2lte-susfs dream2lte_susfs.config V55_BASELINE.config > SHA256SUMS.txt
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S8Plus-dream2lte-SUSFS-kernel
+          name: S8Plus-dream2lte-SUSFS-V55-config
           if-no-files-found: error
           retention-days: 7
           path: |
             Image-dream2lte-susfs
             dream2lte_susfs.config
+            V55_BASELINE.config
+            CONFIG_GATE.json
             SHA256SUMS.txt
             KERNEL_COMMIT.txt
             SUBMODULES.txt
