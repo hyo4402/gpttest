@@ -72,33 +72,49 @@ jobs:
       - name: Build kernel Image
         working-directory: kernel
         run: |
+          set -o pipefail
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-none-linux-gnu-
           make O=out -j2 Image 2>&1 | tee ../BUILD_LOG.txt
 
       - name: Verify SUSFS artifact
         run: |
+          set -euxo pipefail
           test -s kernel/out/arch/arm64/boot/Image
+          test -s kernel/out/vmlinux
+          test -s kernel/out/System.map
+          test -s kernel/out/fs/susfs.o
           grep -q '^CONFIG_KSU=y' kernel/out/.config
           grep -q '^CONFIG_KSU_MANUAL_HOOK=y' kernel/out/.config
           grep -q '^CONFIG_KSU_SUSFS=y' kernel/out/.config
           grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set' kernel/out/.config
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set' kernel/out/.config
-          strings kernel/out/arch/arm64/boot/Image | grep -i -m1 susfs
-          cp kernel/out/arch/arm64/boot/Image Image-dream2lte-susfs
-          cp kernel/out/.config dream2lte_susfs.config
-          sha256sum Image-dream2lte-susfs dream2lte_susfs.config SOURCE_BASELINE.config > SHA256SUMS.txt
+          nm kernel/out/fs/susfs.o | grep -iq 'susfs'
+          grep -iq 'susfs' kernel/out/System.map
+          printf 'SUSFS object: %s bytes\n' "$(stat -c %s kernel/out/fs/susfs.o)" | tee VERIFY_SUSFS.txt
+          grep -i 'susfs' kernel/out/System.map | head -n 30 >> VERIFY_SUSFS.txt
+
+      - name: Prepare build outputs
+        if: always()
+        run: |
+          test -f kernel/out/arch/arm64/boot/Image && cp kernel/out/arch/arm64/boot/Image Image-dream2lte-susfs || true
+          test -f kernel/out/.config && cp kernel/out/.config dream2lte_susfs.config || true
+          test -f kernel/out/System.map && cp kernel/out/System.map System.map-dream2lte-susfs || true
+          sha256sum Image-dream2lte-susfs dream2lte_susfs.config SOURCE_BASELINE.config System.map-dream2lte-susfs > SHA256SUMS.txt 2>/dev/null || true
 
       - name: Upload build artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: S8Plus-dream2lte-SUSFS-source-config
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
           path: |
             Image-dream2lte-susfs
             dream2lte_susfs.config
             SOURCE_BASELINE.config
+            System.map-dream2lte-susfs
+            VERIFY_SUSFS.txt
             SHA256SUMS.txt
             KERNEL_COMMIT.txt
             KERNELSU_COMMIT.txt
