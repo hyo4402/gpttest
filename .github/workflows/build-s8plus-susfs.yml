@@ -39,13 +39,19 @@ jobs:
         run: |
           curl -L --retry 5 --retry-delay 3 -o arm-gnu.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/13.3.rel1/binrel/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
           tar -xf arm-gnu.tar.xz
-          echo "$PWD/arm-gnu-toolchain-13.3.Rel1-x86_64-aarch64-none-linux-gnu/bin" >> "$GITHUB_PATH"
-          arm-gnu-toolchain-13.3.Rel1-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-gcc --version | tee TOOLCHAIN.txt
+          GCC_PATH="$(find "$PWD" -type f -name aarch64-none-linux-gnu-gcc -print -quit)"
+          test -n "$GCC_PATH"
+          TOOLCHAIN_BIN="$(dirname "$GCC_PATH")"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+          "$GCC_PATH" --version | tee TOOLCHAIN.txt
 
       - name: Restore exact V55 config
         run: |
-          echo "139700a74188a2f03d44e04be2f0f49d77c046d5d093b90e99aeff6ed0ee8bf5  configs/v55_4.4.302.config.gz" | sha256sum -c -
-          gzip -dc configs/v55_4.4.302.config.gz > V55_BASELINE.config
+          cat configs/v55_4.4.302.config.gz.b64.part* > V55_CONFIG.b64
+          echo "6fe0a9d2dbf925f72b9d66b4a839ecf717386b235e880f3b601dc875667d7824  V55_CONFIG.b64" | sha256sum -c -
+          base64 -d V55_CONFIG.b64 > V55_CONFIG.gz
+          echo "139700a74188a2f03d44e04be2f0f49d77c046d5d093b90e99aeff6ed0ee8bf5  V55_CONFIG.gz" | sha256sum -c -
+          gzip -dc V55_CONFIG.gz > V55_BASELINE.config
           echo "25534172654cc2ef053bc2b2580dc8e0d647a921624ad7bdea54024f07672c07  V55_BASELINE.config" | sha256sum -c -
           mkdir -p kernel/out
           cp V55_BASELINE.config kernel/out/.config
