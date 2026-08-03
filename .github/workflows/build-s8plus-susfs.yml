@@ -48,7 +48,7 @@ jobs:
       - name: Restore exact V55 config
         run: |
           cat configs/v55_4.4.302.config.gz.b64.part* > V55_CONFIG.b64
-          echo "6fe0a9d2dbf925f72b9d66b4a839ecf717386b235e880f3b601dc875667d7824  V55_CONFIG.b64" | sha256sum -c -
+          echo "d7c77a7f9643206fe25c5bcfab13dc1369d6f624ed0059da41f678c9327661fc  V55_CONFIG.b64" | sha256sum -c -
           base64 -d V55_CONFIG.b64 > V55_CONFIG.gz
           echo "139700a74188a2f03d44e04be2f0f49d77c046d5d093b90e99aeff6ed0ee8bf5  V55_CONFIG.gz" | sha256sum -c -
           gzip -dc V55_CONFIG.gz > V55_BASELINE.config
