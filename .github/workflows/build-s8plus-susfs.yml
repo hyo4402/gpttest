@@ -71,11 +71,30 @@ jobs:
           rc=$?
           set -e
           if [ "$rc" -ne 0 ]; then
-            git status --short | tee ../SUSFS_PORT_STATUS.txt
+            git status --short | tee ../SUSFS_PORT_STATUS_BEFORE_RESOLVE.txt
             git diff --cc > ../SUSFS_PORT_CONFLICT.diff || true
-            find . -name '*.rej' -print -exec cat {} \; > ../SUSFS_PORT_REJECTS.txt || true
-            cat ../SUSFS_PORT_LOG.txt
-            exit "$rc"
+            git rm -f .gitmodules
+            git checkout --ours fs/devpts/inode.c
+            git add fs/devpts/inode.c
+            python3 - <<'PYRESOLVE'
+            from pathlib import Path
+            p=Path('kernel/sys.c')
+            s=p.read_text()
+            start=s.index('<<<<<<< HEAD')
+            mid=s.index('=======', start)
+            end=s.index('>>>>>>> 7bc447310 (feat: add susfs4ksu)', mid)
+            ours=s[start+len('<<<<<<< HEAD'):mid]
+            theirs=s[mid+len('======='):end]
+            s=s[:start]+ours+theirs+s[end+len('>>>>>>> 7bc447310 (feat: add susfs4ksu)'):]
+            p.write_text(s)
+            PYRESOLVE
+            git add kernel/sys.c
+            unmerged="$(git diff --name-only --diff-filter=U)"
+            if [ -n "$unmerged" ]; then
+              printf 'Unexpected unresolved paths:\n%s\n' "$unmerged" | tee ../SUSFS_PORT_UNRESOLVED.txt
+              exit 1
+            fi
+            GIT_EDITOR=true git cherry-pick --continue >> ../SUSFS_PORT_LOG.txt 2>&1
           fi
           git status --short | tee ../SUSFS_PORT_STATUS.txt
           git show --stat --oneline HEAD | tee -a ../SUSFS_PORT_LOG.txt
@@ -190,7 +209,7 @@ jobs:
               'CONFIG_KSU_SUSFS_SUS_SU':'n',
           }
           profile_errors=[{'symbol':k,'expected':v,'actual':b.get(k)} for k,v in required.items() if b.get(k)!=v]
-          report={'total_changes':len(changes),'unexpected_changes':unexpected,'profile_errors':profile_errors,'changes':changes}
+          report={'pass':not unexpected and not profile_errors,'total_changes':len(changes),'unexpected_changes':unexpected,'profile_errors':profile_errors,'changes':changes}
           Path('CONFIG_GATE.json').write_text(json.dumps(report,indent=2)+'\n')
           print(json.dumps({'total_changes':len(changes),'unexpected':len(unexpected),'profile_errors':len(profile_errors)},indent=2))
           if unexpected or profile_errors:
@@ -257,6 +276,8 @@ jobs:
             IMAGE_FILE.txt
             SUSFS_PORT_LOG.txt
             SUSFS_PORT_STATUS.txt
+            SUSFS_PORT_STATUS_BEFORE_RESOLVE.txt
+            SUSFS_PORT_UNRESOLVED.txt
             SUSFS_PORT_CONFLICT.diff
             SUSFS_PORT_REJECTS.txt
             V55_CHUNK_SHA256SUMS.txt
