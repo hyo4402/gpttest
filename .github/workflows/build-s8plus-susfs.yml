@@ -78,6 +78,8 @@ jobs:
       - name: Install pinned KernelSU SUSFS fork
         run: |
           set -euxo pipefail
+          sed -i '/fetch-latest-kernelsu\.sh/d' kernel/scripts/Kbuild.include
+          ! grep -q 'fetch-latest-kernelsu.sh' kernel/scripts/Kbuild.include
           git clone --no-checkout https://github.com/fnr1r/KernelSU.git ksu
           git -C ksu fetch --depth 1 origin ee03fa5bdd1eece21b15581b3bccd06c9d30afc1
           git -C ksu checkout --detach FETCH_HEAD
@@ -88,6 +90,8 @@ jobs:
           git -C ksu rev-parse HEAD | tee KERNELSU_COMMIT.txt
           test -f kernel/drivers/kernelsu/Kconfig
           test -f kernel/drivers/kernelsu/Makefile
+          grep -q '^config KSU_SUSFS$' kernel/drivers/kernelsu/Kconfig
+          cp kernel/drivers/kernelsu/Kconfig KSU_KCONFIG.txt
           grep -n 'ksu_handle_execveat' kernel/fs/exec.c | tee MANUAL_HOOK_EVIDENCE.txt
           grep -n 'ksu_handle_faccessat' kernel/fs/open.c | tee -a MANUAL_HOOK_EVIDENCE.txt
           grep -n 'ksu_handle_stat' kernel/fs/stat.c | tee -a MANUAL_HOOK_EVIDENCE.txt
@@ -193,6 +197,7 @@ jobs:
             KERNELSU_COMMIT.txt
             SUSFS_COMMIT.txt
             SUSFS_CONFIG.txt
+            KSU_KCONFIG.txt
             TOOLCHAIN.txt
             BUILD_LOG.txt
             IMAGE_FILE.txt
