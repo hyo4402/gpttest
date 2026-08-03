@@ -27,11 +27,11 @@ jobs:
 
       - name: Fetch pinned SUSFS source
         run: |
-          git clone --recursive --branch lineage-20.0-kernelsu-susfs https://github.com/fnr1r/android_kernel_samsung_universal8895.git kernel
+          git clone --depth 1 --single-branch --branch lineage-20.0-kernelsu-susfs https://github.com/fnr1r/android_kernel_samsung_universal8895.git kernel
           cd kernel
-          git checkout 7bc44731088e0e004345fcd71eac0fbf877849c1
+          test "$(git rev-parse HEAD)" = "7bc44731088e0e004345fcd71eac0fbf877849c1"
           git submodule sync --recursive
-          git submodule update --init --recursive
+          git submodule update --init --recursive --depth 1
           git rev-parse HEAD | tee ../KERNEL_COMMIT.txt
           git submodule status --recursive | tee ../SUBMODULES.txt
 
