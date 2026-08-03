@@ -97,6 +97,9 @@ jobs:
           grep -n 'ksu_handle_stat' kernel/fs/stat.c | tee -a MANUAL_HOOK_EVIDENCE.txt
           grep -n 'ksu_handle_input_handle_event' kernel/drivers/input/input.c >> MANUAL_HOOK_EVIDENCE.txt || echo 'optional input hook not present in V55 source' >> MANUAL_HOOK_EVIDENCE.txt
 
+      - name: Backport XDP trace hex-string helper
+        run: python3 tools/backport_trace_hex_str.py kernel
+
       - name: Install Arm GNU Toolchain 13.3.Rel1
         run: |
           curl -L --retry 5 --retry-delay 3 -o arm-gnu.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/13.3.rel1/binrel/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
