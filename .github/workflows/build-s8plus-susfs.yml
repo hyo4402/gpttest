@@ -75,7 +75,7 @@ jobs:
           grep -n 'ksu_handle_execveat' kernel/fs/exec.c | tee MANUAL_HOOK_EVIDENCE.txt
           grep -n 'ksu_handle_faccessat' kernel/fs/open.c | tee -a MANUAL_HOOK_EVIDENCE.txt
           grep -n 'ksu_handle_stat' kernel/fs/stat.c | tee -a MANUAL_HOOK_EVIDENCE.txt
-          grep -n 'ksu_handle_input_handle_event' kernel/drivers/input/input.c | tee -a MANUAL_HOOK_EVIDENCE.txt
+          grep -n 'ksu_handle_input_handle_event' kernel/drivers/input/input.c | tee -a MANUAL_HOOK_EVIDENCE.txt || echo 'optional input hook not present in V55 source' | tee -a MANUAL_HOOK_EVIDENCE.txt
 
       - name: Run olddefconfig with pinned KernelSU
         working-directory: kernel
