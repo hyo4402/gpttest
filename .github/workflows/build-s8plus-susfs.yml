@@ -4,11 +4,17 @@ on:
   push:
     branches:
       - agent/alice-s8plus-susfs-build
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
       - name: Checkout workspace
@@ -19,7 +25,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential cpio flex git libelf-dev libssl-dev lz4 python3 rsync xz-utils zip
 
-      - name: Fetch pinned kernel source
+      - name: Fetch pinned SUSFS kernel source
         run: |
           git clone --recursive --branch lineage-20.0-kernelsu-susfs \
             https://github.com/fnr1r/android_kernel_samsung_universal8895.git kernel
@@ -36,9 +42,11 @@ jobs:
             -o arm-gnu.tar.xz \
             https://developer.arm.com/-/media/Files/downloads/gnu/13.3.rel1/binrel/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
           tar -xf arm-gnu.tar.xz
-          echo "$PWD/arm-gnu-toolchain-13.3.Rel1-x86_64-aarch64-none-linux-gnu/bin" >> "$GITHUB_PATH"
+          TOOLCHAIN="$PWD/arm-gnu-toolchain-13.3.Rel1-x86_64-aarch64-none-linux-gnu/bin"
+          echo "$TOOLCHAIN" >> "$GITHUB_PATH"
+          "$TOOLCHAIN/aarch64-none-linux-gnu-gcc" --version | tee TOOLCHAIN.txt
 
-      - name: Configure dream2lte with safe SUSFS profile
+      - name: Configure dream2lte and enable safe SUSFS
         working-directory: kernel
         run: |
           export ARCH=arm64
@@ -57,27 +65,26 @@ jobs:
             -d KSU_SUSFS_ENABLE_LOG \
             -d KSU_SUSFS_SUS_SU
           make O=out olddefconfig
-          grep -E '^(CONFIG_KSU|CONFIG_KSU_SUSFS)' out/.config | tee ../SUSFS_CONFIG.txt
+          grep -E '^(CONFIG_KSU|CONFIG_KSU_SUSFS)|^# CONFIG_KSU_SUSFS' out/.config | tee ../SUSFS_CONFIG.txt
 
-      - name: Build kernel and DTB
+      - name: Build SUSFS kernel Image only
         working-directory: kernel
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-none-linux-gnu-
-          make O=out -j2 Image dtb.img 2>&1 | tee ../BUILD_LOG.txt
+          make O=out -j2 Image 2>&1 | tee ../BUILD_LOG.txt
 
-      - name: Verify SUSFS build
+      - name: Verify build and SUSFS symbols
         run: |
           test -s kernel/out/arch/arm64/boot/Image
-          test -s kernel/out/arch/arm64/boot/dtb.img
+          grep -q '^CONFIG_KSU=y' kernel/out/.config
           grep -q '^CONFIG_KSU_SUSFS=y' kernel/out/.config
           grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set' kernel/out/.config
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set' kernel/out/.config
           strings kernel/out/arch/arm64/boot/Image | grep -i -m1 susfs
-          sha256sum kernel/out/arch/arm64/boot/Image kernel/out/arch/arm64/boot/dtb.img kernel/out/.config | tee SHA256SUMS.txt
           cp kernel/out/.config dream2lte_susfs.config
           cp kernel/out/arch/arm64/boot/Image Image-dream2lte-susfs
-          cp kernel/out/arch/arm64/boot/dtb.img dtb-dream2lte-source.img
+          sha256sum Image-dream2lte-susfs dream2lte_susfs.config > SHA256SUMS.txt
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -87,10 +94,10 @@ jobs:
           retention-days: 7
           path: |
             Image-dream2lte-susfs
-            dtb-dream2lte-source.img
             dream2lte_susfs.config
             SHA256SUMS.txt
             KERNEL_COMMIT.txt
             SUBMODULES.txt
             SUSFS_CONFIG.txt
+            TOOLCHAIN.txt
             BUILD_LOG.txt
