@@ -13,23 +13,11 @@ permissions:
   contents: read
 
 jobs:
-  source-probe:
+  ksu-probe:
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        source_branch:
-          - oneui-23
-          - oneui-23-rebase
-          - 43r0
-          - 43r0-rc
-          - 43r0-rc-camera
-          - 4.5-rc
-          - sep-16.1
-          - stock
+    timeout-minutes: 60
     steps:
-      - name: Checkout probe workspace
+      - name: Checkout workspace
         uses: actions/checkout@v4
 
       - name: Install config dependencies
@@ -62,28 +50,34 @@ jobs:
           gzip -dc V55_CONFIG.gz > V55_BASELINE.config
           echo "25534172654cc2ef053bc2b2580dc8e0d647a921624ad7bdea54024f07672c07  V55_BASELINE.config" | sha256sum -c -
 
-      - name: Clone candidate source
+      - name: Clone pinned V55 source
         run: |
           set -euxo pipefail
-          git clone --depth 1 --single-branch --branch "${{ matrix.source_branch }}" https://github.com/boloaimer/exynos-8895.git kernel
+          git clone --depth 1 --single-branch --branch sep-16.1 https://github.com/boloaimer/exynos-8895.git kernel
+          test "$(git -C kernel rev-parse HEAD)" = "dcdaf6878e7f9497e1d90e25980decfa5d684f74"
           git -C kernel rev-parse HEAD | tee SOURCE_COMMIT.txt
-          printf '%s\n' "${{ matrix.source_branch }}" > SOURCE_BRANCH.txt
           head -n 5 kernel/Makefile | tee KERNEL_VERSION.txt
 
-      - name: Probe KernelSU and platform features
+      - name: Install pinned KernelSU-Next legacy tree
         run: |
           set -euxo pipefail
-          {
-            echo "branch=${{ matrix.source_branch }}"
-            echo "commit=$(cat SOURCE_COMMIT.txt)"
-            for p in fs/erofs fs/incremental drivers/gpu/arm/tmix_r19p0 drivers/kernelsu KernelSU; do
-              test -e "kernel/$p" && echo "present:$p" || echo "absent:$p"
-            done
-            grep -R -n -m1 'ksu_handle_execveat' kernel/fs/exec.c kernel 2>/dev/null || true
-            grep -R -n -m1 'KSU_SUSFS\|susfs' kernel 2>/dev/null || true
-          } | tee FEATURE_EVIDENCE.txt
+          git clone --no-checkout https://github.com/KernelSU-Next/KernelSU-Next.git ksun
+          git -C ksun fetch --depth 1 origin 706413e0ddd0ed644b55b7e60397546d4ea57257
+          git -C ksun checkout --detach FETCH_HEAD
+          test "$(git -C ksun rev-parse HEAD)" = "706413e0ddd0ed644b55b7e60397546d4ea57257"
+          rm -rf kernel/drivers/kernelsu
+          mkdir -p kernel/drivers/kernelsu
+          cp -a ksun/kernel/. kernel/drivers/kernelsu/
+          cp -a ksun/uapi kernel/drivers/kernelsu/uapi
+          git -C ksun rev-parse HEAD | tee KERNELSU_COMMIT.txt
+          test -f kernel/drivers/kernelsu/Kconfig
+          test -f kernel/drivers/kernelsu/Makefile
+          grep -n 'ksu_handle_execveat' kernel/fs/exec.c | tee MANUAL_HOOK_EVIDENCE.txt
+          grep -n 'ksu_handle_faccessat' kernel/fs/open.c | tee -a MANUAL_HOOK_EVIDENCE.txt
+          grep -n 'ksu_handle_stat' kernel/fs/stat.c | tee -a MANUAL_HOOK_EVIDENCE.txt
+          grep -n 'ksu_handle_input_handle_event' kernel/drivers/input/input.c | tee -a MANUAL_HOOK_EVIDENCE.txt
 
-      - name: Run olddefconfig against exact V55 config
+      - name: Run olddefconfig with pinned KernelSU
         working-directory: kernel
         run: |
           set -euxo pipefail
@@ -93,12 +87,11 @@ jobs:
           make O=out olddefconfig
           cp out/.config ../CANDIDATE.config
 
-      - name: Generate exact drift report
+      - name: Generate KSU provenance report
         run: |
           python3 - <<'PY'
           import json
           from pathlib import Path
-
           def parse(path):
               d={}
               for line in Path(path).read_text(errors='replace').splitlines():
@@ -107,39 +100,40 @@ jobs:
                   elif line.startswith('# CONFIG_') and line.endswith(' is not set'):
                       d[line[2:-11]]='n'
               return d
-
-          a=parse('V55_BASELINE.config')
-          b=parse('CANDIDATE.config')
+          a=parse('V55_BASELINE.config'); b=parse('CANDIDATE.config')
           changes=[]
           for k in sorted(set(a)|set(b)):
-              if a.get(k)!=b.get(k):
-                  changes.append({'symbol':k,'before':a.get(k),'after':b.get(k)})
-          non_ksu=[x for x in changes if not x['symbol'].startswith('CONFIG_KSU')]
+              if a.get(k)!=b.get(k): changes.append({'symbol':k,'before':a.get(k),'after':b.get(k)})
+          meaningful=[x for x in changes if x['before'] is not None and x['after'] is not None]
+          removed=[x for x in changes if x['before'] is not None and x['after'] is None]
+          added=[x for x in changes if x['before'] is None and x['after'] is not None]
           report={
-              'branch':Path('SOURCE_BRANCH.txt').read_text().strip(),
-              'commit':Path('SOURCE_COMMIT.txt').read_text().strip(),
+              'source_commit':Path('SOURCE_COMMIT.txt').read_text().strip(),
+              'kernelsu_commit':Path('KERNELSU_COMMIT.txt').read_text().strip(),
               'total_changes':len(changes),
-              'non_ksu_changes':len(non_ksu),
+              'meaningful_value_changes':meaningful,
+              'removed_symbols':removed,
+              'new_source_symbols':added,
               'changes':changes,
-              'non_ksu':non_ksu,
-              'exact_non_ksu_match':not non_ksu,
           }
-          Path('PROBE_REPORT.json').write_text(json.dumps(report,indent=2)+'\n')
-          print(json.dumps({k:report[k] for k in ('branch','commit','total_changes','non_ksu_changes','exact_non_ksu_match')},indent=2))
+          Path('KSU_PROBE_REPORT.json').write_text(json.dumps(report,indent=2)+'\n')
+          print(json.dumps({'total_changes':len(changes),'meaningful':len(meaningful),'removed':len(removed),'added':len(added)},indent=2))
           PY
-          sha256sum V55_BASELINE.config CANDIDATE.config PROBE_REPORT.json > SHA256SUMS.txt
+          grep -E '^(CONFIG_KSU|# CONFIG_KSU)' CANDIDATE.config | tee KSU_CONFIG.txt
+          sha256sum V55_BASELINE.config CANDIDATE.config KSU_PROBE_REPORT.json > SHA256SUMS.txt
 
-      - name: Upload probe artifact
+      - name: Upload KSU probe artifact
         uses: actions/upload-artifact@v4
         with:
-          name: V55-source-probe-${{ matrix.source_branch }}
+          name: V55-sep16.1-pinned-KernelSU-probe
           retention-days: 7
           path: |
-            SOURCE_BRANCH.txt
             SOURCE_COMMIT.txt
+            KERNELSU_COMMIT.txt
             KERNEL_VERSION.txt
-            FEATURE_EVIDENCE.txt
+            MANUAL_HOOK_EVIDENCE.txt
             V55_BASELINE.config
             CANDIDATE.config
-            PROBE_REPORT.json
+            KSU_CONFIG.txt
+            KSU_PROBE_REPORT.json
             SHA256SUMS.txt
