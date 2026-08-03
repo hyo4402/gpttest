@@ -32,20 +32,26 @@ jobs:
           gzip -dc V55_CONFIG.gz > V55_BASELINE.config
           echo '25534172654cc2ef053bc2b2580dc8e0d647a921624ad7bdea54024f07672c07  V55_BASELINE.config' | sha256sum -c -
 
-      - name: Clone pinned V55 source
+      - name: Clone pinned V55 source and restore KSU 0.9 hook ABI
         run: |
           set -euxo pipefail
           git clone --depth 1 --single-branch --branch sep-16.1 https://github.com/boloaimer/exynos-8895.git kernel
           test "$(git -C kernel rev-parse HEAD)" = 'dcdaf6878e7f9497e1d90e25980decfa5d684f74'
           git -C kernel rev-parse HEAD | tee SOURCE_COMMIT.txt
           head -n 5 kernel/Makefile | tee KERNEL_VERSION.txt
+          cd kernel
+          git config user.name alice-ci
+          git config user.email alice-ci@users.noreply.github.com
+          git fetch --depth 2 origin f1c5b91a788f38214f04ab22563d0bceac7c2c17
+          git revert --no-edit f1c5b91a788f38214f04ab22563d0bceac7c2c17
+          git rev-parse HEAD | tee ../KSU_HOOK_COMPAT_COMMIT.txt
+          git show --stat --oneline HEAD | tee ../KSU_HOOK_COMPAT_LOG.txt
+          cd ..
 
       - name: Port pinned SUSFS integration
         run: |
           set -euxo pipefail
           cd kernel
-          git config user.name alice-ci
-          git config user.email alice-ci@users.noreply.github.com
           git remote add susfs-port https://github.com/fnr1r/android_kernel_samsung_universal8895.git
           git fetch --depth 2 susfs-port 7bc44731088e0e004345fcd71eac0fbf877849c1
           set +e
@@ -95,9 +101,14 @@ jobs:
           grep -n 'ksu_handle_execveat' kernel/fs/exec.c | tee MANUAL_HOOK_EVIDENCE.txt
           grep -n 'ksu_handle_faccessat' kernel/fs/open.c | tee -a MANUAL_HOOK_EVIDENCE.txt
           grep -n 'ksu_handle_stat' kernel/fs/stat.c | tee -a MANUAL_HOOK_EVIDENCE.txt
-          grep -n 'ksu_handle_input_handle_event' kernel/drivers/input/input.c >> MANUAL_HOOK_EVIDENCE.txt || echo 'optional input hook not present in V55 source' >> MANUAL_HOOK_EVIDENCE.txt
+          grep -n 'ksu_handle_vfs_read' kernel/fs/read_write.c | tee -a MANUAL_HOOK_EVIDENCE.txt
+          grep -n 'ksu_handle_input_handle_event' kernel/drivers/input/input.c | tee -a MANUAL_HOOK_EVIDENCE.txt
+          ! grep -q 'ksu_handle_sys_reboot' kernel/kernel/reboot.c
+          ! grep -q 'ksu_handle_newfstat_ret' kernel/fs/stat.c
+          ! grep -q 'ksu_handle_fstat64_ret' kernel/fs/stat.c
+          ! grep -q 'is_ksu_transition' kernel/security/selinux/hooks.c
 
-      - name: Backport XDP trace hex-string helper
+      - name: Backport V55 compatibility fixes
         run: python3 tools/backport_trace_hex_str.py kernel
 
       - name: Install Arm GNU Toolchain 13.3.Rel1
@@ -197,6 +208,8 @@ jobs:
             MANUAL_HOOK_EVIDENCE.txt
             SHA256SUMS.txt
             SOURCE_COMMIT.txt
+            KSU_HOOK_COMPAT_COMMIT.txt
+            KSU_HOOK_COMPAT_LOG.txt
             KERNELSU_COMMIT.txt
             SUSFS_COMMIT.txt
             SUSFS_CONFIG.txt
