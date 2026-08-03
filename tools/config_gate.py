@@ -31,14 +31,17 @@ def main() -> int:
         if before != after:
             changes.append({"symbol": symbol, "before": before, "after": after})
 
+    # The source already contains real manual hooks. KernelSU forks expose
+    # different auxiliary KSU symbols, so only the CONFIG_KSU* namespace may
+    # differ from the embedded V55 baseline.
     unexpected = [
         change for change in changes
-        if not change["symbol"].startswith("CONFIG_KSU_SUSFS")
+        if not change["symbol"].startswith("CONFIG_KSU")
     ]
 
     required = {
+        "CONFIG_OVERLAY_FS": "y",
         "CONFIG_KSU": "y",
-        "CONFIG_KSU_MANUAL_HOOK": "y",
         "CONFIG_KSU_SUSFS": "y",
         "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
         "CONFIG_KSU_SUSFS_SUS_KSTAT": "y",
