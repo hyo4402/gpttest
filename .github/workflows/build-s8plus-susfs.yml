@@ -13,58 +13,31 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  source-probe:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        source_branch:
+          - oneui-23
+          - oneui-23-rebase
+          - 43r0
+          - 43r0-rc
+          - 43r0-rc-camera
+          - 4.5-rc
+          - sep-16.1
+          - stock
     steps:
-      - name: Checkout workspace
+      - name: Checkout probe workspace
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install config dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential cpio flex git libelf-dev libssl-dev lz4 python3 rsync xz-utils zip
+          sudo apt-get install -y bc bison build-essential flex git libelf-dev libssl-dev python3
 
-      - name: Fetch pinned SUSFS source and KernelSU
-        run: |
-          git clone --depth 1 --single-branch --branch lineage-20.0-kernelsu-susfs https://github.com/fnr1r/android_kernel_samsung_universal8895.git kernel
-          cd kernel
-          test "$(git rev-parse HEAD)" = "7bc44731088e0e004345fcd71eac0fbf877849c1"
-          git submodule sync --recursive
-          git submodule update --init --recursive --depth 1
-          git clone --no-checkout https://github.com/fnr1r/KernelSU.git KernelSU
-          cd KernelSU
-          git fetch --depth 1 origin ee03fa5bdd1eece21b15581b3bccd06c9d30afc1
-          git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "ee03fa5bdd1eece21b15581b3bccd06c9d30afc1"
-          cd ..
-          ln -s ../KernelSU/kernel drivers/kernelsu
-          test -f drivers/kernelsu/Kconfig
-          test -f drivers/kernelsu/Makefile
-          git rev-parse HEAD | tee ../KERNEL_COMMIT.txt
-          git -C KernelSU rev-parse HEAD | tee ../KERNELSU_COMMIT.txt
-          git submodule status --recursive | tee ../SUBMODULES.txt
-
-      - name: Verify manual KernelSU hook integration
-        working-directory: kernel
-        run: |
-          set -euxo pipefail
-          grep -n 'ksu_handle_faccessat' fs/open.c | tee ../MANUAL_HOOK_EVIDENCE.txt
-          grep -n 'ksu_handle_execveat' fs/exec.c | tee -a ../MANUAL_HOOK_EVIDENCE.txt
-          grep -n 'ksu_handle_stat' fs/stat.c | tee -a ../MANUAL_HOOK_EVIDENCE.txt
-          grep -n 'ksu_handle_input_handle_event' drivers/input/input.c | tee -a ../MANUAL_HOOK_EVIDENCE.txt
-
-      - name: Install Arm GNU Toolchain 13.3.Rel1
-        run: |
-          curl -L --retry 5 --retry-delay 3 -o arm-gnu.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/13.3.rel1/binrel/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-          tar -xf arm-gnu.tar.xz
-          GCC_PATH="$(find "$PWD" -type f -name aarch64-none-linux-gnu-gcc -print -quit)"
-          test -n "$GCC_PATH"
-          TOOLCHAIN_BIN="$(dirname "$GCC_PATH")"
-          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
-          "$GCC_PATH" --version | tee TOOLCHAIN.txt
-
-      - name: Restore exact V55 embedded config from verified chunks
+      - name: Restore exact V55 embedded config
         run: |
           set -euxo pipefail
           cat > V55_CHUNK_SHA256SUMS.txt <<'EOF'
@@ -88,91 +61,85 @@ jobs:
           echo "7ca6bc454a72d88477ac94b6baa1185c193339c72d64e3c401a0c94a958b45cf  V55_CONFIG.gz" | sha256sum -c -
           gzip -dc V55_CONFIG.gz > V55_BASELINE.config
           echo "25534172654cc2ef053bc2b2580dc8e0d647a921624ad7bdea54024f07672c07  V55_BASELINE.config" | sha256sum -c -
-          mkdir -p kernel/out
-          cp V55_BASELINE.config kernel/out/.config
 
-      - name: Enable full SUSFS profile except SUS_SU
+      - name: Clone candidate source
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --single-branch --branch "${{ matrix.source_branch }}" https://github.com/boloaimer/exynos-8895.git kernel
+          git -C kernel rev-parse HEAD | tee SOURCE_COMMIT.txt
+          printf '%s\n' "${{ matrix.source_branch }}" > SOURCE_BRANCH.txt
+          head -n 5 kernel/Makefile | tee KERNEL_VERSION.txt
+
+      - name: Probe KernelSU and platform features
+        run: |
+          set -euxo pipefail
+          {
+            echo "branch=${{ matrix.source_branch }}"
+            echo "commit=$(cat SOURCE_COMMIT.txt)"
+            for p in fs/erofs fs/incremental drivers/gpu/arm/tmix_r19p0 drivers/kernelsu KernelSU; do
+              test -e "kernel/$p" && echo "present:$p" || echo "absent:$p"
+            done
+            grep -R -n -m1 'ksu_handle_execveat' kernel/fs/exec.c kernel 2>/dev/null || true
+            grep -R -n -m1 'KSU_SUSFS\|susfs' kernel 2>/dev/null || true
+          } | tee FEATURE_EVIDENCE.txt
+
+      - name: Run olddefconfig against exact V55 config
         working-directory: kernel
         run: |
           set -euxo pipefail
+          mkdir -p out
+          cp ../V55_BASELINE.config out/.config
           export ARCH=arm64
-          export CROSS_COMPILE=aarch64-none-linux-gnu-
-          scripts/config --file out/.config -e OVERLAY_FS
-          scripts/config --file out/.config -e KSU -e KSU_SUSFS
-          scripts/config --file out/.config -e KSU_SUSFS_SUS_PATH
-          scripts/config --file out/.config -d KSU_SUSFS_SUS_SU
-          scripts/config --file out/.config -e KSU_SUSFS_ENABLE_LOG
-          scripts/config --file out/.config -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT -e KSU_SUSFS_SUS_OVERLAYFS
-          scripts/config --file out/.config -e KSU_SUSFS_TRY_UMOUNT -e KSU_SUSFS_SPOOF_UNAME
           make O=out olddefconfig
-          grep -E '^(CONFIG_OVERLAY_FS|CONFIG_KSU|CONFIG_KSU_SUSFS)|^# CONFIG_KSU_SUSFS' out/.config | tee ../SUSFS_CONFIG.txt
-          grep -q '^CONFIG_OVERLAY_FS=y' out/.config
-          grep -q '^CONFIG_KSU=y' out/.config
-          grep -q '^CONFIG_KSU_SUSFS=y' out/.config
-          grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y' out/.config
-          grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y' out/.config
-          grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set' out/.config
+          cp out/.config ../CANDIDATE.config
 
-      - name: Enforce exact V55 config drift gate
-        run: python3 tools/config_gate.py V55_BASELINE.config kernel/out/.config CONFIG_GATE.json
-
-      - name: Build kernel Image
-        working-directory: kernel
+      - name: Generate exact drift report
         run: |
-          set -o pipefail
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-none-linux-gnu-
-          make O=out -j2 Image 2>&1 | tee ../BUILD_LOG.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
 
-      - name: Verify SUSFS artifact
-        run: |
-          set -euxo pipefail
-          test -s kernel/out/arch/arm64/boot/Image
-          test -s kernel/out/vmlinux
-          test -s kernel/out/System.map
-          test -s kernel/out/fs/susfs.o
-          test -s kernel/out/drivers/kernelsu/kernelsu.o
-          grep -q '^CONFIG_OVERLAY_FS=y' kernel/out/.config
-          grep -q '^CONFIG_KSU=y' kernel/out/.config
-          grep -q '^CONFIG_KSU_SUSFS=y' kernel/out/.config
-          grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y' kernel/out/.config
-          grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y' kernel/out/.config
-          grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set' kernel/out/.config
-          nm kernel/out/fs/susfs.o | grep -iq 'susfs'
-          nm kernel/out/drivers/kernelsu/kernelsu.o | grep -iq 'ksu'
-          grep -iq 'susfs' kernel/out/System.map
-          printf 'SUSFS object: %s bytes\n' "$(stat -c %s kernel/out/fs/susfs.o)" | tee VERIFY_SUSFS.txt
-          printf 'KernelSU object: %s bytes\n' "$(stat -c %s kernel/out/drivers/kernelsu/kernelsu.o)" | tee -a VERIFY_SUSFS.txt
-          grep -i 'susfs' kernel/out/System.map | head -n 30 >> VERIFY_SUSFS.txt
+          def parse(path):
+              d={}
+              for line in Path(path).read_text(errors='replace').splitlines():
+                  if line.startswith('CONFIG_') and '=' in line:
+                      k,v=line.split('=',1); d[k]=v
+                  elif line.startswith('# CONFIG_') and line.endswith(' is not set'):
+                      d[line[2:-11]]='n'
+              return d
 
-      - name: Prepare build outputs
-        if: always()
-        run: |
-          test -f kernel/out/arch/arm64/boot/Image && cp kernel/out/arch/arm64/boot/Image Image-dream2lte-susfs || true
-          test -f kernel/out/.config && cp kernel/out/.config dream2lte_susfs.config || true
-          test -f kernel/out/System.map && cp kernel/out/System.map System.map-dream2lte-susfs || true
-          sha256sum Image-dream2lte-susfs dream2lte_susfs.config V55_BASELINE.config System.map-dream2lte-susfs > SHA256SUMS.txt 2>/dev/null || true
+          a=parse('V55_BASELINE.config')
+          b=parse('CANDIDATE.config')
+          changes=[]
+          for k in sorted(set(a)|set(b)):
+              if a.get(k)!=b.get(k):
+                  changes.append({'symbol':k,'before':a.get(k),'after':b.get(k)})
+          non_ksu=[x for x in changes if not x['symbol'].startswith('CONFIG_KSU')]
+          report={
+              'branch':Path('SOURCE_BRANCH.txt').read_text().strip(),
+              'commit':Path('SOURCE_COMMIT.txt').read_text().strip(),
+              'total_changes':len(changes),
+              'non_ksu_changes':len(non_ksu),
+              'changes':changes,
+              'non_ksu':non_ksu,
+              'exact_non_ksu_match':not non_ksu,
+          }
+          Path('PROBE_REPORT.json').write_text(json.dumps(report,indent=2)+'\n')
+          print(json.dumps({k:report[k] for k in ('branch','commit','total_changes','non_ksu_changes','exact_non_ksu_match')},indent=2))
+          PY
+          sha256sum V55_BASELINE.config CANDIDATE.config PROBE_REPORT.json > SHA256SUMS.txt
 
-      - name: Upload build artifact
-        if: always()
+      - name: Upload probe artifact
         uses: actions/upload-artifact@v4
         with:
-          name: S8Plus-dream2lte-SUSFS-full-no-SUS_SU-V55-exact
-          if-no-files-found: warn
+          name: V55-source-probe-${{ matrix.source_branch }}
           retention-days: 7
           path: |
-            Image-dream2lte-susfs
-            dream2lte_susfs.config
+            SOURCE_BRANCH.txt
+            SOURCE_COMMIT.txt
+            KERNEL_VERSION.txt
+            FEATURE_EVIDENCE.txt
             V55_BASELINE.config
-            CONFIG_GATE.json
-            System.map-dream2lte-susfs
-            VERIFY_SUSFS.txt
-            MANUAL_HOOK_EVIDENCE.txt
+            CANDIDATE.config
+            PROBE_REPORT.json
             SHA256SUMS.txt
-            KERNEL_COMMIT.txt
-            KERNELSU_COMMIT.txt
-            SUBMODULES.txt
-            SUSFS_CONFIG.txt
-            TOOLCHAIN.txt
-            BUILD_LOG.txt
-            V55_CHUNK_SHA256SUMS.txt
