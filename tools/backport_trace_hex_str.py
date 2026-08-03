@@ -63,4 +63,23 @@ for label, block in (("do_last post-check", bad_do_last), ("vfs_unlink2 post-che
     s = s.replace(block, f"/* V55 SUSFS compatibility: {label} is redundant; may_open/may_delete enforce SUS_PATH. */\n", 1)
 p.write_text(s)
 
-print("Backported trace __print_hex_str and adapted SUSFS namei hooks for V55")
+# Repair a literal stray 'v' in the pinned V55 cfg80211 scan-done trace event.
+# This affects trace formatting only; no Wi-Fi runtime logic or driver state.
+p = root / "net/wireless/trace.h"
+s = p.read_text()
+old = '''\t),
+v
+);
+
+DEFINE_EVENT(wiphy_only_evt, cfg80211_sched_scan_results,'''
+new = '''\t),
+\tTP_printk("cfg80211 scan done")
+);
+
+DEFINE_EVENT(wiphy_only_evt, cfg80211_sched_scan_results,'''
+count = s.count(old)
+if count != 1:
+    raise SystemExit(f"expected one cfg80211 trace typo, found {count}")
+p.write_text(s.replace(old, new, 1))
+
+print("Applied V55 compatibility fixes: trace hex string, SUSFS namei and cfg80211 trace typo")
