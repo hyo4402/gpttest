@@ -45,6 +45,15 @@ jobs:
           git -C KernelSU rev-parse HEAD | tee ../KERNELSU_COMMIT.txt
           git submodule status --recursive | tee ../SUBMODULES.txt
 
+      - name: Verify manual KernelSU hook integration
+        working-directory: kernel
+        run: |
+          set -euxo pipefail
+          grep -n 'ksu_handle_faccessat' fs/open.c | tee ../MANUAL_HOOK_EVIDENCE.txt
+          grep -n 'ksu_handle_execveat' fs/exec.c | tee -a ../MANUAL_HOOK_EVIDENCE.txt
+          grep -n 'ksu_handle_stat' fs/stat.c | tee -a ../MANUAL_HOOK_EVIDENCE.txt
+          grep -n 'ksu_handle_input_handle_event' drivers/input/input.c | tee -a ../MANUAL_HOOK_EVIDENCE.txt
+
       - name: Install Arm GNU Toolchain 13.3.Rel1
         run: |
           curl -L --retry 5 --retry-delay 3 -o arm-gnu.tar.xz https://developer.arm.com/-/media/Files/downloads/gnu/13.3.rel1/binrel/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
@@ -58,16 +67,21 @@ jobs:
       - name: Configure dream2lte with safe SUSFS
         working-directory: kernel
         run: |
+          set -euxo pipefail
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-none-linux-gnu-
           make O=out exynos8895-dream2lte_defconfig
           cp out/.config ../SOURCE_BASELINE.config
-          scripts/config --file out/.config -e KSU -e KSU_MANUAL_HOOK -e KSU_SUSFS
+          scripts/config --file out/.config -e OVERLAY_FS
+          scripts/config --file out/.config -e KSU -e KSU_SUSFS
           scripts/config --file out/.config -d KSU_SUSFS_SUS_PATH -d KSU_SUSFS_SUS_SU -d KSU_SUSFS_ENABLE_LOG
           scripts/config --file out/.config -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT -e KSU_SUSFS_SUS_OVERLAYFS
           scripts/config --file out/.config -e KSU_SUSFS_TRY_UMOUNT -e KSU_SUSFS_SPOOF_UNAME
           make O=out olddefconfig
-          grep -E '^(CONFIG_KSU|CONFIG_KSU_SUSFS)|^# CONFIG_KSU_SUSFS' out/.config | tee ../SUSFS_CONFIG.txt
+          grep -E '^(CONFIG_OVERLAY_FS|CONFIG_KSU|CONFIG_KSU_SUSFS)|^# CONFIG_KSU_SUSFS' out/.config | tee ../SUSFS_CONFIG.txt
+          grep -q '^CONFIG_OVERLAY_FS=y' out/.config
+          grep -q '^CONFIG_KSU=y' out/.config
+          grep -q '^CONFIG_KSU_SUSFS=y' out/.config
 
       - name: Build kernel Image
         working-directory: kernel
@@ -84,14 +98,17 @@ jobs:
           test -s kernel/out/vmlinux
           test -s kernel/out/System.map
           test -s kernel/out/fs/susfs.o
+          test -s kernel/out/drivers/kernelsu/kernelsu.o
+          grep -q '^CONFIG_OVERLAY_FS=y' kernel/out/.config
           grep -q '^CONFIG_KSU=y' kernel/out/.config
-          grep -q '^CONFIG_KSU_MANUAL_HOOK=y' kernel/out/.config
           grep -q '^CONFIG_KSU_SUSFS=y' kernel/out/.config
           grep -q '^# CONFIG_KSU_SUSFS_SUS_PATH is not set' kernel/out/.config
           grep -q '^# CONFIG_KSU_SUSFS_SUS_SU is not set' kernel/out/.config
           nm kernel/out/fs/susfs.o | grep -iq 'susfs'
+          nm kernel/out/drivers/kernelsu/kernelsu.o | grep -iq 'ksu'
           grep -iq 'susfs' kernel/out/System.map
           printf 'SUSFS object: %s bytes\n' "$(stat -c %s kernel/out/fs/susfs.o)" | tee VERIFY_SUSFS.txt
+          printf 'KernelSU object: %s bytes\n' "$(stat -c %s kernel/out/drivers/kernelsu/kernelsu.o)" | tee -a VERIFY_SUSFS.txt
           grep -i 'susfs' kernel/out/System.map | head -n 30 >> VERIFY_SUSFS.txt
 
       - name: Prepare build outputs
@@ -115,6 +132,7 @@ jobs:
             SOURCE_BASELINE.config
             System.map-dream2lte-susfs
             VERIFY_SUSFS.txt
+            MANUAL_HOOK_EVIDENCE.txt
             SHA256SUMS.txt
             KERNEL_COMMIT.txt
             KERNELSU_COMMIT.txt
