@@ -31,9 +31,7 @@ def main() -> int:
         if before != after:
             changes.append({"symbol": symbol, "before": before, "after": after})
 
-    # The source already contains real manual hooks. KernelSU forks expose
-    # different auxiliary KSU symbols, so only the CONFIG_KSU* namespace may
-    # differ from the embedded V55 baseline.
+    # Only KernelSU/SUSFS symbols may differ from the embedded V55 config.
     unexpected = [
         change for change in changes
         if not change["symbol"].startswith("CONFIG_KSU")
@@ -48,9 +46,9 @@ def main() -> int:
         "CONFIG_KSU_SUSFS_SUS_OVERLAYFS": "y",
         "CONFIG_KSU_SUSFS_TRY_UMOUNT": "y",
         "CONFIG_KSU_SUSFS_SPOOF_UNAME": "y",
-        "CONFIG_KSU_SUSFS_SUS_PATH": "n",
+        "CONFIG_KSU_SUSFS_SUS_PATH": "y",
         "CONFIG_KSU_SUSFS_SUS_SU": "n",
-        "CONFIG_KSU_SUSFS_ENABLE_LOG": "n",
+        "CONFIG_KSU_SUSFS_ENABLE_LOG": "y",
     }
     profile_errors = [
         {"symbol": symbol, "expected": expected, "actual": built.get(symbol, "n")}
@@ -61,6 +59,8 @@ def main() -> int:
     report = {
         "baseline": baseline_path,
         "built": built_path,
+        "allowed_change_namespace": "CONFIG_KSU*",
+        "required_profile": required,
         "all_changes": changes,
         "unexpected_changes": unexpected,
         "profile_errors": profile_errors,
