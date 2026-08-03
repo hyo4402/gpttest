@@ -1,0 +1,142 @@
+name: Probe V55 source provenance
+
+on:
+  push:
+    branches:
+      - 'agent/alice-s8plus-susfs-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        source_branch:
+          - oneui-23
+          - oneui-23-rebase
+          - 43r0
+          - 43r0-rc
+          - 43r0-rc-camera
+          - 4.5-rc
+          - sep-16.1
+          - stock
+    steps:
+      - name: Checkout probe workspace
+        uses: actions/checkout@v4
+
+      - name: Install config dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex git libelf-dev libssl-dev python3
+
+      - name: Restore exact V55 embedded config
+        run: |
+          set -euxo pipefail
+          cat > V55_CHUNK_SHA256SUMS.txt <<'EOF'
+          9759f680d1b37f1493711665fe61bfd58cb0793dfca6ddf05bf6ec67e79a93fb  configs/v55_chunks/part00.b64
+          8f251f201e5ebaf5d45c62038098addd3e05f829c251eebb29fb388c34a89df0  configs/v55_chunks/part01.b64
+          0db07e70ca6d694f6e25418c0dcbc8bc075ff74fb025ddddb0e66588ee7edbd6  configs/v55_chunks/part02.b64
+          bbde9919761434a8160184202a7052d9b1393972b1cad83a9bdc889e2f2f2d04  configs/v55_chunks/part03.b64
+          9b68ca8ce339b0d351873d09166cdc5548bc32cf04049133169f411fb7b68c52  configs/v55_chunks/part04.b64
+          f3b3b5c8428227dfe45ce1ba310f024061a7b087702f971eefed47b60ec87ad7  configs/v55_chunks/part05.b64
+          e0aca3338228498cd8bb4b0f96174497963b293b2e49aa75e7ed303a0a833d06  configs/v55_chunks/part06.b64
+          047a4b2bd77de047a25107b43d7c663057ec659b61b25ee7838fca7e8ad91a41  configs/v55_chunks/part07.b64
+          2078ad4a510200cbe57d564166d117e30d2fdb254ea8d96f295e6b432918ed6b  configs/v55_chunks/part08.b64
+          52490499df847acce551515ed2d6926f206e97968ee3e198ed4651e476363b0e  configs/v55_chunks/part09.b64
+          b009ca8927a7078cd776738a25318b405ce16ae9de2515a8fb0e8ffd0071991f  configs/v55_chunks/part10.b64
+          02203434f90dcaa36ca71904af611ead3aff4d298e5e75b11e4c1923c92f67f4  configs/v55_chunks/part11.b64
+          EOF
+          sha256sum -c V55_CHUNK_SHA256SUMS.txt
+          cat configs/v55_chunks/part{00..11}.b64 > V55_CONFIG.b64
+          echo "dacf46588d375e8b3e1943b950260f8c40bacb10f79db143bf0bd4b3488ff2c2  V55_CONFIG.b64" | sha256sum -c -
+          base64 -d V55_CONFIG.b64 > V55_CONFIG.gz
+          echo "7ca6bc454a72d88477ac94b6baa1185c193339c72d64e3c401a0c94a958b45cf  V55_CONFIG.gz" | sha256sum -c -
+          gzip -dc V55_CONFIG.gz > V55_BASELINE.config
+          echo "25534172654cc2ef053bc2b2580dc8e0d647a921624ad7bdea54024f07672c07  V55_BASELINE.config" | sha256sum -c -
+
+      - name: Clone candidate source
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --single-branch --branch "${{ matrix.source_branch }}" https://github.com/boloaimer/exynos-8895.git kernel
+          git -C kernel rev-parse HEAD | tee SOURCE_COMMIT.txt
+          printf '%s\n' "${{ matrix.source_branch }}" > SOURCE_BRANCH.txt
+          head -n 5 kernel/Makefile | tee KERNEL_VERSION.txt
+
+      - name: Probe KernelSU and platform features
+        run: |
+          set -euxo pipefail
+          {
+            echo "branch=${{ matrix.source_branch }}"
+            echo "commit=$(cat SOURCE_COMMIT.txt)"
+            for p in fs/erofs fs/incremental drivers/gpu/arm/tmix_r19p0 drivers/kernelsu KernelSU; do
+              test -e "kernel/$p" && echo "present:$p" || echo "absent:$p"
+            done
+            grep -R -n -m1 'ksu_handle_execveat' kernel/fs/exec.c kernel 2>/dev/null || true
+            grep -R -n -m1 'KSU_SUSFS\|susfs' kernel 2>/dev/null || true
+          } | tee FEATURE_EVIDENCE.txt
+
+      - name: Run olddefconfig against exact V55 config
+        working-directory: kernel
+        run: |
+          set -euxo pipefail
+          mkdir -p out
+          cp ../V55_BASELINE.config out/.config
+          export ARCH=arm64
+          make O=out olddefconfig
+          cp out/.config ../CANDIDATE.config
+
+      - name: Generate exact drift report
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          def parse(path):
+              d={}
+              for line in Path(path).read_text(errors='replace').splitlines():
+                  if line.startswith('CONFIG_') and '=' in line:
+                      k,v=line.split('=',1); d[k]=v
+                  elif line.startswith('# CONFIG_') and line.endswith(' is not set'):
+                      d[line[2:-11]]='n'
+              return d
+
+          a=parse('V55_BASELINE.config')
+          b=parse('CANDIDATE.config')
+          changes=[]
+          for k in sorted(set(a)|set(b)):
+              if a.get(k)!=b.get(k):
+                  changes.append({'symbol':k,'before':a.get(k),'after':b.get(k)})
+          non_ksu=[x for x in changes if not x['symbol'].startswith('CONFIG_KSU')]
+          report={
+              'branch':Path('SOURCE_BRANCH.txt').read_text().strip(),
+              'commit':Path('SOURCE_COMMIT.txt').read_text().strip(),
+              'total_changes':len(changes),
+              'non_ksu_changes':len(non_ksu),
+              'changes':changes,
+              'non_ksu':non_ksu,
+              'exact_non_ksu_match':not non_ksu,
+          }
+          Path('PROBE_REPORT.json').write_text(json.dumps(report,indent=2)+'\n')
+          print(json.dumps({k:report[k] for k in ('branch','commit','total_changes','non_ksu_changes','exact_non_ksu_match')},indent=2))
+          PY
+          sha256sum V55_BASELINE.config CANDIDATE.config PROBE_REPORT.json > SHA256SUMS.txt
+
+      - name: Upload probe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: V55-source-probe-${{ matrix.source_branch }}
+          retention-days: 7
+          path: |
+            SOURCE_BRANCH.txt
+            SOURCE_COMMIT.txt
+            KERNEL_VERSION.txt
+            FEATURE_EVIDENCE.txt
+            V55_BASELINE.config
+            CANDIDATE.config
+            PROBE_REPORT.json
+            SHA256SUMS.txt
